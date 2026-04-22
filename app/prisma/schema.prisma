@@ -1,0 +1,366 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================
+// ENUMS
+// ============================
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  APPLE
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum SubscriptionPlan {
+  FREE
+  STARTER
+  PROFESSIONAL
+  BUSINESS
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  VIEWED
+  PAID
+  OVERDUE
+  CANCELED
+}
+
+enum AppointmentStatus {
+  CONFIRMED
+  PENDING
+  CANCELED
+  COMPLETED
+  NO_SHOW
+}
+
+enum Currency {
+  USD
+  EUR
+  GBP
+  CAD
+}
+
+// ============================
+// USER & AUTH
+// ============================
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String?
+  avatar        String?
+  provider      AuthProvider @default(EMAIL)
+  supabaseId    String       @unique
+  lastLoginAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  memberships   BusinessMember[]
+
+  @@index([email])
+  @@index([supabaseId])
+}
+
+// ============================
+// BUSINESS & TEAM
+// ============================
+
+model Business {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique
+  logo          String?
+  email         String?
+  phone         String?
+  website       String?
+  industry      String?
+  address       String?
+  city          String?
+  state         String?
+  zipCode       String?
+  country       String   @default("US")
+  timezone      String   @default("America/New_York")
+  currency      Currency @default(USD)
+  taxRate       Decimal? @default(0)
+  invoicePrefix String   @default("INV")
+  nextInvoiceNo Int      @default(1001)
+
+  workingHours  Json?
+
+  stripeCustomerId  String? @unique
+  stripeConnectId   String? @unique
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  members            BusinessMember[]
+  subscription       Subscription?
+  clients            Client[]
+  invoices           Invoice[]
+  invoiceTemplates   InvoiceTemplate[]
+  bookingPages       BookingPage[]
+  appointments       Appointment[]
+
+  @@index([slug])
+}
+
+model BusinessMember {
+  id         String   @id @default(cuid())
+  businessId String
+  userId     String
+  role       UserRole @default(OWNER)
+  joinedAt   DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, userId])
+  @@index([businessId])
+  @@index([userId])
+}
+
+// ============================
+// SUBSCRIPTION
+// ============================
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  businessId           String             @unique
+  plan                 SubscriptionPlan   @default(FREE)
+  status               SubscriptionStatus @default(TRIALING)
+  stripeSubscriptionId String?            @unique
+
+  aiActionsUsed        Int @default(0)
+  aiActionsLimit       Int @default(100)
+  teamMembersLimit     Int @default(1)
+
+  trialEndsAt          DateTime?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  canceledAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+}
+
+// ============================
+// CLIENTS
+// ============================
+
+model Client {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  email      String?
+  phone      String?
+  company    String?
+  address    String?
+  city       String?
+  state      String?
+  zipCode    String?
+  country    String?
+  tags       String[] @default([])
+  notes      String?
+
+  totalRevenue    Decimal  @default(0)
+  totalInvoices   Int      @default(0)
+  lastInvoiceDate DateTime?
+  lastAppointment DateTime?
+
+  isArchived Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  invoices     Invoice[]
+  appointments Appointment[]
+
+  @@unique([businessId, email])
+  @@index([businessId])
+  @@index([businessId, name])
+}
+
+// ============================
+// INVOICING
+// ============================
+
+model Invoice {
+  id          String        @id @default(cuid())
+  businessId  String
+  clientId    String?
+  number      String
+  status      InvoiceStatus @default(DRAFT)
+
+  issueDate   DateTime      @default(now())
+  dueDate     DateTime
+  paidAt      DateTime?
+  sentAt      DateTime?
+
+  subtotal    Int           @default(0)
+  taxRate     Decimal       @default(0)
+  taxAmount   Int           @default(0)
+  discount    Int           @default(0)
+  total       Int           @default(0)
+  currency    Currency      @default(USD)
+
+  stripePaymentIntentId String?
+  paymentMethod         String?
+
+  notes       String?
+  terms       String?
+  pdfUrl      String?
+
+  remindersSent    Int       @default(0)
+  lastReminderAt   DateTime?
+  nextReminderAt   DateTime?
+
+  isRecurring       Boolean   @default(false)
+  recurringInterval String?
+  parentInvoiceId   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  client        Client?       @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  items         InvoiceItem[]
+  parentInvoice Invoice?      @relation("RecurringInvoice", fields: [parentInvoiceId], references: [id])
+  childInvoices Invoice[]     @relation("RecurringInvoice")
+
+  @@unique([businessId, number])
+  @@index([businessId])
+  @@index([businessId, status])
+  @@index([businessId, clientId])
+}
+
+model InvoiceItem {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Decimal @default(1)
+  unitPrice   Int
+  total       Int
+  sortOrder   Int     @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+// ============================
+// SCHEDULING
+// ============================
+
+model BookingPage {
+  id          String  @id @default(cuid())
+  businessId  String
+  slug        String
+  title       String
+  description String?
+
+  duration     Int     @default(30)
+  bufferBefore Int     @default(0)
+  bufferAfter  Int     @default(15)
+  minNotice    Int     @default(60)
+  maxAdvance   Int     @default(30)
+
+  availability Json?
+  color        String  @default("#2563eb")
+  requirePhone Boolean @default(false)
+  questions    Json?
+
+  locationType    String @default("video")
+  locationDetails String?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+
+  @@unique([businessId, slug])
+  @@index([businessId])
+  @@index([slug])
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  businessId    String
+  bookingPageId String?
+  clientId      String?
+
+  startTime     DateTime
+  endTime       DateTime
+  timezone      String @default("America/New_York")
+  status        AppointmentStatus @default(CONFIRMED)
+
+  title         String?
+  notes         String?
+  answers       Json?
+
+  clientName    String?
+  clientEmail   String?
+  clientPhone   String?
+
+  googleEventId   String?
+  reminderSentAt  DateTime?
+  cancelToken     String?         @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  business    Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  bookingPage BookingPage? @relation(fields: [bookingPageId], references: [id], onDelete: SetNull)
+  client      Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  @@index([businessId])
+  @@index([businessId, startTime])
+  @@index([bookingPageId])
+}
+
+// ============================
+// INVOICE TEMPLATES
+// ============================
+
+model InvoiceTemplate {
+  id         String @id @default(cuid())
+  businessId String
+  name       String
+  notes      String?
+  terms      String?
+  taxRate    Decimal @default(0)
+  items      Json   // Array of { description, quantity, unitPrice }
+
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+}
